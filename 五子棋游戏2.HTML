@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>五子棋 · 人机对战</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:#f5f3ee; color:#24221d; display:flex; justify-content:center; padding:18px; }
+  main { width:min(96vw, 620px); }
+  h1 { font-size:22px; margin:0 0 12px; letter-spacing:.5px; }
+  .panel { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; background:#fffdf8; border:1px solid #e6dfd2; border-radius:14px; padding:12px; margin-bottom:12px; box-shadow:0 4px 18px rgba(60,50,30,.06); }
+  .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:14px; }
+  label { display:flex; gap:6px; align-items:center; color:#5c5547; }
+  select, button.action { border:1px solid #d9cfbd; background:#fff; color:#2b2720; border-radius:10px; padding:8px 10px; font-size:14px; cursor:pointer; }
+  .status { width:100%; font-weight:600; color:#3c3529; margin-top:2px; }
+  #board { display:grid; gap:3px; background:linear-gradient(145deg,#d7b878,#bf9454); padding:10px; border-radius:16px; box-shadow:inset 0 1px 0 rgba(255,255,255,.35), 0 12px 34px rgba(90,65,25,.22); aspect-ratio:1/1; }
+  .cell { appearance:none; border:0; padding:0; background:transparent; position:relative; cursor:pointer; display:grid; place-items:center; transition:transform .08s ease, filter .12s ease; }
+  .cell:hover { transform:scale(1.06); filter:brightness(1.05); z-index:2; }
+  .cell::after { content:""; width:78%; height:78%; border-radius:50%; opacity:0; transition:opacity .12s ease, transform .12s ease; box-shadow:inset -3px -4px 6px rgba(255,255,255,.35), inset 2px 3px 5px rgba(0,0,0,.45), 0 2px 4px rgba(0,0,0,.28); transform:scale(.75); }
+  .cell.black::after { opacity:1; background:radial-gradient(circle at 35% 30%, #6f6a61, #171717 68%, #000 100%); transform:scale(1); }
+  .cell.white::after { opacity:1; background:radial-gradient(circle at 35% 30%, #ffffff, #d8d2c6 70%, #a89e8f 100%); box-shadow:inset -3px -4px 7px rgba(0,0,0,.22), inset 2px 3px 5px rgba(255,255,255,.9), 0 2px 4px rgba(0,0,0,.25); transform:scale(1); }
+  .note { margin-top:12px; color:#6d6354; font-size:13px; line-height:1.55; }
+</style>
+</head>
+<body>
+<main>
+  <h1>五子棋 · Web 人机对战</h1>
+
+  <section class="panel">
+    <div class="controls">
+      <label>棋盘
+        <select id="sizeSel" aria-label="选择棋盘大小">
+          <option value="9" selected>9×9</option>
+          <option value="11">11×11</option>
+          <option value="13">13×13</option>
+          <option value="15">15×15</option>
+        </select>
+      </label>
+      <label>难度
+        <select id="diffSel" aria-label="选择 AI 难度">
+          <option value="easy">简单</option>
+          <option value="medium" selected>普通</option>
+          <option value="hard">困难（启发式更强）</option>
+        </select>
+      </label>
+      <button id="resetBtn" class="action" type="button">重新开始</button>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite">你是黑棋，请落子</div>
+  </section>
+
+  <div id="board" aria-label="五子棋棋盘"></div>
+
+  <p class="note">规则：先连成 5 枚同色棋子者胜；棋满无人获胜为平局。AI 使用简单启发式评估（进攻 + 防守），不是最强引擎，特别是大棋盘时会明显弱于专业算法。</p>
+</main>
+
+<script>
+(() => {
+  const boardEl = document.getElementById('board');
+  const statusEl = document.getElementById('status');
+  const sizeSel = document.getElementById('sizeSel');
+  const diffSel = document.getElementById('diffSel');
+  const resetBtn = document.getElementById('resetBtn');
+
+  let N = Number(sizeSel.value);
+  let state = []; // 0 empty, 1 human black, 2 AI white
+  let over = false;
+  let humanTurn = true;
+  let aiTimer = null;
+
+  const DIRS = [[1,0],[0,1],[1,1],[1,-1]];
+
+  function idx(x, y) { return y * N + x; }
+  function inBounds(x, y) { return x >= 0 && y >= 0 && x < N && y < N; }
+  function setStatus(text) { statusEl.textContent = text; }
+
+  function build() {
+    clearTimeout(aiTimer);
+    N = Number(sizeSel.value);
+    state = new Array(N * N).fill(0);
+    over = false;
+    humanTurn = true;
+
+    boardEl.style.gridTemplateColumns = `repeat(${N}, minmax(0, 1fr))`;
+    boardEl.innerHTML = '';
+
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = idx(x, y);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cell';
+        b.dataset.i = String(i);
+        b.setAttribute('aria-label', `第 ${y + 1} 行，第 ${x + 1} 列`);
+        boardEl.appendChild(b);
+      }
+    }
+    setStatus('你是黑棋（先手），请落子');
+  }
+
+  function countDir(x, y, dx, dy, val) {
+    let c = 0;
+    x += dx; y += dy;
+    while (inBounds(x, y) && state[idx(x, y)] === val) { c++; x += dx; y += dy; }
+    return c;
+  }
+
+  function openBeyond(x, y, awayX, awayY, count) {
+    const nx = x + awayX * (count + 1);
+    const ny = y + awayY * (count + 1);
+    return inBounds(nx, ny) && state[idx(nx, ny)] === 0;
+  }
+
+  function checkWinAt(i, val) {
+    const x = i % N, y = Math.floor(i / N);
+    for (const [dx, dy] of DIRS) {
+      let total = countDir(x, y, dx, dy, val) + countDir(x, y, -dx, -dy, val) + 1;
+      if (total >= 5) return true;
+    }
+    return false;
+  }
+
+  function emptyCount() { return state.reduce((a, v) => a + (v === 0 ? 1 : 0), 0); }
+
+  function scoreForColor(i, val) {
+    const x = i % N, y = Math.floor(i / N);
+    let best = 0;
+
+    for (const [dx, dy] of DIRS) {
+      const leftCount = countDir(x, y, -dx, -dy, val);
+      const rightCount = countDir(x, y, dx, dy, val);
+      const total = leftCount + rightCount + 1;
+
+      if (total >= 5) return 10_000_000; // 立即成五，优先级最高
+
+      const openL = openBeyond(x, y, -dx, -dy, leftCount);
+      const openR = openBeyond(x, y, dx, dy, rightCount);
+
+      let v = total * 30;
+      if (total === 4 && (openL || openR)) {
+        v = 80_000 + (openL ? 8_000 : 0) + (openR ? 8_000 : 0) + ((openL && openR) ? 45_000 : 0);
+      } else if (total === 3 && openL && openR) {
+        v = 16_000;
+      } else if (total === 3) {
+        v = 6_500;
+      } else if (total === 2 && openL && openR) {
+        v = 2_600;
+      } else if (total === 2) {
+        v = 700;
+      }
+
+      best = Math.max(best, v);
+    }
+    return best;
+  }
+
+  function chooseAiMove() {
+    const empty = [];
+    for (let i = 0; i < state.length; i++) if (state[i] === 0) empty.push(i);
+    if (empty.length === 0) return -1;
+
+    const diff = diffSel.value;
+    const winCell = empty.find(i => scoreForColor(i, 2) >= 9_000_000);
+
+    // 困难/普通：能赢就赢；困难时若对手即将获胜也优先堵
+    if (winCell !== undefined && diff !== 'easy') return winCell;
+    const blockCell = empty.find(i => scoreForColor(i, 1) >= 9_000_000);
+    if (diff === 'hard' && blockCell !== undefined) return blockCell;
+
+    let bestScore = -Infinity;
+    let bestCells = [];
+    for (const i of empty) {
+      const attack = scoreForColor(i, 2);       // AI white
+      const defend = scoreForColor(i, 1);       // human black
+      let s;
+
+      if (diff === 'easy') {
+        s = attack * 0.55 + defend * 0.45 + Math.random() * 6_000;
+      } else if (diff === 'hard') {
+        s = attack * 1.25 + defend * 1.35 + scoreForColor(i, 2) * 0.05;
+      } else {
+        s = attack * 1.05 + defend * 1.15 + Math.random() * 180;
+      }
+
+      if (s > bestScore + 1e-6) { bestScore = s; bestCells = [i]; }
+      else if (Math.abs(s - bestScore) <= 1e-6) bestCells.push(i);
+    }
+    return bestCells[Math.floor(Math.random() * bestCells.length)];
+  }
+
+  function renderCell(i, val) {
+    const btn = boardEl.children[i];
+    btn.classList.add(val === 1 ? 'black' : 'white');
+    btn.setAttribute('aria-label', `已落${val === 1 ? '黑棋' : '白棋'}`);
+  }
+
+  function placeStone(i, val) {
+    state[i] = val;
+    renderCell(i, val);
+  }
+
+  function finishIfEnded(lastI, val) {
+    if (checkWinAt(lastI, val)) {
+      over = true;
+      humanTurn = false;
+      setStatus(val === 1 ? '你获胜！🎉' : 'AI 获胜，再试一次？');
+      return true;
+    }
+    if (emptyCount() === 0) {
+      over = true;
+      humanTurn = false;
+      setStatus('棋盘已满，平局。');
+      return true;
+    }
+    return false;
+  }
+
+  function aiMove() {
+    if (over || !humanTurn === false) return; // safety guard
+    const i = chooseAiMove();
+    if (i < 0) return finishIfEnded(-1, 2);
+
+    placeStone(i, 2);
+    if (finishIfEnded(i, 2)) return;
+
+    humanTurn = true;
+    setStatus('轮到你，黑棋落子');
+  }
+
+  function onCellClick(e) {
+    const btn = e.target.closest('.cell[data-i]');
+    if (!btn || over || !humanTurn) return;
+
+    const i = Number(btn.dataset.i);
+    if (state[i] !== 0) return;
+
+    placeStone(i, 1); // human black
+    if (finishIfEnded(i, 1)) return;
+
+    humanTurn = false;
+    setStatus('AI 思考中…');
+    aiTimer = setTimeout(aiMove, 160 + Math.random() * 260);
+  }
+
+  boardEl.addEventListener('click', onCellClick);
+  resetBtn.addEventListener('click', build);
+  sizeSel.addEventListener('change', build);
+
+  build();
+})();
+</script>
+</body>
+</html>
