@@ -13,9 +13,6 @@
 2. 用浏览器打开它
 3. 选择棋盘大小和难度开始对战
 
-## 在线预览
-部署到 GitHub Pages / Netlify Drop 后，把链接放在这里。
-
 ## 技术栈
 HTML + CSS + JavaScript，单文件实现。
 
